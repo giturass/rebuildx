@@ -1,0 +1,95 @@
+name: Build server.zip (android arm64)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build_android_arm64:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout workflow repo
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Clone xray-core
+        run: |
+          git clone https://github.com/XTLS/Xray-core.git xray-core
+          cd xray-core
+          git submodule update --init --recursive
+
+      - name: Patch core/core.go
+        run: |
+          set -e
+          cd xray-core
+          FILE="core/core.go"
+
+          sed -i 's/codename = ".*"/codename = "My AI Server."/g' "$FILE"
+          sed -i 's/intro    = ".*"/intro    = ""/g' "$FILE"
+          sed -i 's/serial.Concat("Xray /serial.Concat("Server /g' "$FILE"
+          sed -i '/intro,/d' "$FILE"
+
+      # 与官方 scheduled-assets-update.yml 一致的 geodata 获取方式
+      - name: Prepare geoip.dat & geosite.dat
+        run: |
+          set -euo pipefail
+          cd xray-core
+
+          BASE="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/release"
+          RAW="https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release"
+
+          fetch_and_verify () {
+            local name="$1"
+            local out="$2"
+
+            curl -L -o "${out}" "${BASE}/${name}.dat"
+            curl -L -o "${out}.sha256sum" "${RAW}/${name}.dat.sha256sum"
+
+            expect="$(awk '{print $1}' "${out}.sha256sum" | head -n 1)"
+            actual="$(sha256sum "${out}" | awk '{print $1}')"
+
+            [ "$expect" = "$actual" ] || {
+              echo "SHA256 mismatch for ${out}"
+              exit 1
+            }
+          }
+
+          fetch_and_verify geoip geoip.dat
+          fetch_and_verify geosite geosite.dat
+
+      # ✅ Android / arm64 编译（只改 GOOS / GOARCH）
+      - name: Build server (android arm64)
+        run: |
+          cd xray-core
+          GOOS=android \
+          GOARCH=arm64 \
+          CGO_ENABLED=0 \
+          go build \
+            -o server \
+            -trimpath \
+            -buildvcs=false \
+            -ldflags="-s -w -buildid=" \
+            -v \
+            ./main
+
+      - name: Package server.zip
+        run: |
+          set -e
+          cd xray-core
+          chmod +x server
+          rm -f server.zip
+          zip -9 server.zip server geoip.dat geosite.dat
+          ls -lh server.zip
+
+      - name: Upload artifact (for testing)
+        uses: actions/upload-artifact@v4
+        with:
+          name: server-android-arm64
+          path: xray-core/server.zip
