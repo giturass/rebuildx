@@ -1,4 +1,4 @@
-name: Build & Release (latest) android arm64
+name: Build & Release (latest) linux amd64
 
 on:
   workflow_dispatch:
@@ -36,11 +36,11 @@ jobs:
           sed -i 's/serial.Concat("Xray /serial.Concat("Server /g' "$FILE"
           sed -i '/intro,/d' "$FILE"
 
-      - name: Build server binary (android arm64)
+      - name: Build server binary (linux amd64)
         run: |
           cd xray-core
-          GOOS=android \
-          GOARCH=arm64 \
+          GOOS=linux \
+          GOARCH=amd64 \
           CGO_ENABLED=0 \
           go build \
             -o server \
@@ -102,7 +102,7 @@ jobs:
           tag_name: latest
           name: latest
           body: |
-            Server (android/arm64)
+            Server (linux/amd64)
 
             Included files:
             - server
