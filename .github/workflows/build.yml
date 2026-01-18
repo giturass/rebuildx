@@ -1,4 +1,4 @@
-name: Build server.zip (android arm64)
+name: Build & Release (latest) android arm64
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ permissions:
   contents: write
 
 jobs:
-  build_android_arm64:
+  build_release:
     runs-on: ubuntu-latest
 
     steps:
@@ -36,36 +36,7 @@ jobs:
           sed -i 's/serial.Concat("Xray /serial.Concat("Server /g' "$FILE"
           sed -i '/intro,/d' "$FILE"
 
-      # 与官方 scheduled-assets-update.yml 一致的 geodata 获取方式
-      - name: Prepare geoip.dat & geosite.dat
-        run: |
-          set -euo pipefail
-          cd xray-core
-
-          BASE="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/release"
-          RAW="https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/release"
-
-          fetch_and_verify () {
-            local name="$1"
-            local out="$2"
-
-            curl -L -o "${out}" "${BASE}/${name}.dat"
-            curl -L -o "${out}.sha256sum" "${RAW}/${name}.dat.sha256sum"
-
-            expect="$(awk '{print $1}' "${out}.sha256sum" | head -n 1)"
-            actual="$(sha256sum "${out}" | awk '{print $1}')"
-
-            [ "$expect" = "$actual" ] || {
-              echo "SHA256 mismatch for ${out}"
-              exit 1
-            }
-          }
-
-          fetch_and_verify geoip geoip.dat
-          fetch_and_verify geosite geosite.dat
-
-      # ✅ Android / arm64 编译（只改 GOOS / GOARCH）
-      - name: Build server (android arm64)
+      - name: Build server binary (android arm64)
         run: |
           cd xray-core
           GOOS=android \
@@ -79,17 +50,65 @@ jobs:
             -v \
             ./main
 
+      - name: Download geoip & geosite
+        run: |
+          set -e
+          cd xray-core
+
+          curl -L -o geoip.dat \
+            https://github.com/v2fly/geoip/releases/latest/download/geoip.dat
+
+          curl -L -o geosite.dat \
+            https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
+
       - name: Package server.zip
         run: |
           set -e
           cd xray-core
-          chmod +x server
-          rm -f server.zip
-          zip -9 server.zip server geoip.dat geosite.dat
-          ls -lh server.zip
 
-      - name: Upload artifact (for testing)
-        uses: actions/upload-artifact@v4
+          chmod +x server
+          zip -9 server.zip server geoip.dat geosite.dat
+
+      - name: Update tag latest (force)
+        run: |
+          set -e
+          git tag -f latest
+          git push -f origin latest
+
+      - name: Clean old assets on latest release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          OWNER="${GITHUB_REPOSITORY%/*}"
+          REPO="${GITHUB_REPOSITORY#*/}"
+
+          if ! gh release view latest --repo "$OWNER/$REPO" >/dev/null 2>&1; then
+            echo "No existing latest release, skip cleanup."
+            exit 0
+          fi
+
+          gh api "/repos/$OWNER/$REPO/releases/tags/latest" \
+            --jq '.assets[] | "\(.id) \(.name)"' \
+          | while read -r id name; do
+              echo "Deleting asset: $name"
+              gh api -X DELETE "/repos/$OWNER/$REPO/releases/assets/$id" >/dev/null
+            done
+
+      - name: Publish GitHub Release (latest)
+        uses: softprops/action-gh-release@v2
         with:
-          name: server-android-arm64
-          path: xray-core/server.zip
+          tag_name: latest
+          name: latest
+          body: |
+            Server (android/arm64)
+
+            Included files:
+            - server
+            - geoip.dat
+            - geosite.dat
+          files: |
+            xray-core/server.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
